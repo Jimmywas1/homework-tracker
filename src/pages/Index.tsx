@@ -29,9 +29,13 @@ const Index = () => {
     if (syncAttempted.current) return;
     syncAttempted.current = true;
 
+    // Clear stale localStorage on startup so the clean-replace sync starts fresh
+    localStorage.removeItem('homework-kanban-assignments');
+    assignmentsHook.setAssignments([]);
+
     // Automatically trigger the initial Canvas sync on application load
     canvasSyncHook.syncFromCanvas(
-      assignmentsHook.assignments,
+      [],
       assignmentsHook.addAssignment,
       assignmentsHook.setAssignments
     ).finally(() => {
