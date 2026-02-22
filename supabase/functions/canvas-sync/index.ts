@@ -242,6 +242,9 @@ serve(async (req) => {
               const effectiveDueAt = a.lock_at || a.due_at;
               if (!effectiveDueAt) continue; // No date → off the board
 
+              // Skip Gimkit assignments from Chinese class — they're in-class games, not homework
+              if (course.name.toLowerCase().includes("chinese") && a.name.toLowerCase().includes("gimkit")) continue;
+
               // Enforce perpetual Dynamic Quarter filtering (uses due_at for boundary check)
               if (activeQuarterStart && activeQuarterEnd) {
                 const checkDate = new Date(a.due_at || effectiveDueAt);
