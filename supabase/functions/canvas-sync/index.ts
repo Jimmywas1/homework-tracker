@@ -102,7 +102,7 @@ serve(async (req) => {
     for (const user of usersToFetch) {
       const studentId = user.id;
       const studentName = user.name;
-      
+
       console.log(`Fetching courses for student: ${studentName}`);
 
       // Fetch active courses
@@ -121,7 +121,51 @@ serve(async (req) => {
       const courses: CanvasCourse[] = await coursesRes.json();
       console.log(`Found ${courses.length} courses for ${studentName}`);
 
+      // NEW: Dynamically resolve the active quarter from the school's Canvas definitions to ensure perpetual filtering.
+      let activeQuarterStart: Date | null = null;
+      let activeQuarterEnd: Date | null = null;
+      let activeQuarterTitle: string = "Unknown Quarter";
+
+      if (courses.length > 0) {
+        try {
+          const firstCourseId = courses[0].id;
+          const gpRes = await fetch(`${CANVAS_BASE_URL}/api/v1/courses/${firstCourseId}?include[]=grading_periods`, { headers });
+          if (gpRes.ok) {
+            const courseData = await gpRes.json();
+            const gradingPeriods = courseData.grading_periods;
+
+            if (gradingPeriods && Array.isArray(gradingPeriods) && gradingPeriods.length > 0) {
+              const now = new Date();
+              let targetQuarter = gradingPeriods.find(gp => {
+                const s = new Date(gp.start_date);
+                const e = new Date(gp.end_date);
+                return now >= s && now <= e;
+              });
+
+              // If dates fall in a gap (e.g., winter break), find the closest quarter
+              if (!targetQuarter) {
+                targetQuarter = [...gradingPeriods].sort((a, b) => {
+                  const distA = Math.min(Math.abs(now.getTime() - new Date(a.start_date).getTime()), Math.abs(now.getTime() - new Date(a.end_date).getTime()));
+                  const distB = Math.min(Math.abs(now.getTime() - new Date(b.start_date).getTime()), Math.abs(now.getTime() - new Date(b.end_date).getTime()));
+                  return distA - distB;
+                })[0];
+              }
+
+              if (targetQuarter) {
+                activeQuarterStart = new Date(targetQuarter.start_date);
+                activeQuarterEnd = new Date(targetQuarter.end_date);
+                activeQuarterTitle = targetQuarter.title || "Target Quarter";
+                console.log(`Dynamically resolved active quarter for ${studentName}: ${activeQuarterTitle} (${activeQuarterStart.toISOString()} - ${activeQuarterEnd.toISOString()})`);
+              }
+            }
+          }
+        } catch (err) {
+          console.error(`Failed to resolve grading periods for ${studentName}:`, err);
+        }
+      }
+
       await Promise.all(
+
         courses.map(async (course) => {
           try {
             // Try fetching assignments 
@@ -160,7 +204,7 @@ serve(async (req) => {
                 if (subRes.ok) {
                   const submissions = await subRes.json();
                   console.log(`  Submissions endpoint returned ${submissions.length} items`);
-                  
+
                   // Convert submissions to assignment format
                   for (const sub of submissions) {
                     if (sub.assignment) {
@@ -193,10 +237,26 @@ serve(async (req) => {
               let dueDateStr = "";
               let dueStatus: "overdue" | "upcoming" | "undated" = "undated";
 
+              // Enforce perpetual Dynamic Quarter filtering
+              if (a.due_at && activeQuarterStart && activeQuarterEnd) {
+                const dueDate = new Date(a.due_at);
+                // 10-day buffer to ensure assignments slightly outside bounds aren't lost
+                const graceStart = new Date(activeQuarterStart.getTime() - 10 * 24 * 60 * 60 * 1000);
+                const graceEnd = new Date(activeQuarterEnd.getTime() + 10 * 24 * 60 * 60 * 1000);
+
+                if (dueDate < graceStart || dueDate > graceEnd) {
+                  continue; // Exclude assignment outside of active quarter
+                }
+              }
+
               if (a.due_at) {
                 const dueDate = new Date(a.due_at);
-                const daysPast = (now.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24);
-                if (daysPast > 90) continue;
+
+                // Fallback: If we couldn't resolve a quarter from Canvas, filter older than 90 days.
+                if (!activeQuarterStart) {
+                  const daysPast = (now.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24);
+                  if (daysPast > 90) continue;
+                }
 
                 dueDateStr = dueDate.toISOString().split("T")[0];
                 dueStatus = dueDate < now ? "overdue" : "upcoming";
