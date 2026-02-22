@@ -1,0 +1,4 @@
+project_id = "riwvqhcbatryrrtyuoyl"
+
+[functions.canvas-sync]
+verify_jwt = false

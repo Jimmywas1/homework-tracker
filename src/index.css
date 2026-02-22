@@ -1,0 +1,171 @@
+@import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 225 25% 12%;
+    --foreground: 210 40% 96%;
+
+    --card: 225 22% 16%;
+    --card-foreground: 210 40% 96%;
+
+    --popover: 225 22% 16%;
+    --popover-foreground: 210 40% 96%;
+
+    --primary: 32 95% 60%;
+    --primary-foreground: 225 25% 10%;
+
+    --secondary: 225 20% 22%;
+    --secondary-foreground: 210 40% 96%;
+
+    --muted: 225 18% 20%;
+    --muted-foreground: 220 15% 55%;
+
+    --accent: 32 95% 60%;
+    --accent-foreground: 225 25% 10%;
+
+    --destructive: 0 72% 55%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 225 15% 25%;
+    --input: 225 15% 25%;
+    --ring: 32 95% 60%;
+
+    --radius: 1rem;
+
+    /* Kanban column colors */
+    --col-todo: 12 85% 62%;
+    --col-todo-glow: 12 90% 70%;
+    --col-progress: 210 95% 58%;
+    --col-progress-glow: 210 100% 68%;
+    --col-done: 155 70% 45%;
+    --col-done-glow: 155 80% 55%;
+
+    /* Due status colors */
+    --due-overdue: 0 72% 55%;
+    --due-upcoming: 195 80% 50%;
+    --due-undated: 45 90% 55%;
+
+    /* Grade colors */
+    --grade-a: 155 70% 45%;
+    --grade-b: 195 80% 50%;
+    --grade-c: 45 90% 55%;
+    --grade-d: 25 85% 55%;
+    --grade-f: 0 72% 55%;
+
+    --sidebar-background: 225 22% 14%;
+    --sidebar-foreground: 210 40% 96%;
+    --sidebar-primary: 32 95% 60%;
+    --sidebar-primary-foreground: 225 25% 10%;
+    --sidebar-accent: 225 20% 22%;
+    --sidebar-accent-foreground: 210 40% 96%;
+    --sidebar-border: 225 15% 25%;
+    --sidebar-ring: 32 95% 60%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-body;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: 'Fredoka', sans-serif;
+  }
+
+  .font-body {
+    font-family: 'Space Grotesk', sans-serif;
+  }
+
+  .kanban-card-shadow {
+    box-shadow: 0 4px 20px -4px hsl(0 0% 0% / 0.4),
+                0 0 0 1px hsl(0 0% 100% / 0.05);
+  }
+
+  .kanban-card-shadow-hover {
+    box-shadow: 0 8px 30px -4px hsl(0 0% 0% / 0.5),
+                0 0 0 1px hsl(0 0% 100% / 0.1);
+  }
+
+  .col-glow-todo {
+    box-shadow: 0 0 40px -10px hsl(var(--col-todo) / 0.3);
+  }
+
+  .col-glow-progress {
+    box-shadow: 0 0 40px -10px hsl(var(--col-progress) / 0.3);
+  }
+
+  .col-glow-done {
+    box-shadow: 0 0 40px -10px hsl(var(--col-done) / 0.3);
+  }
+
+  .glass {
+    backdrop-filter: blur(12px);
+    background: hsl(225 22% 16% / 0.7);
+  }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-6px); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes pop-in {
+  0% { transform: scale(0.8); opacity: 0; }
+  70% { transform: scale(1.05); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+.animate-shimmer {
+  animation: shimmer 3s linear infinite;
+  background-size: 200% 100%;
+}
+
+.animate-pop-in {
+  animation: pop-in 0.3s ease-out;
+}
+
+/* Card hover rainbow border effect */
+@keyframes rainbow-shift {
+  0% { border-color: hsl(var(--col-todo) / 0.5); }
+  33% { border-color: hsl(var(--col-progress) / 0.5); }
+  66% { border-color: hsl(var(--col-done) / 0.5); }
+  100% { border-color: hsl(var(--col-todo) / 0.5); }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: hsl(var(--background));
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted));
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground));
+}
