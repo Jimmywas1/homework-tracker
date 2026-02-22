@@ -1,4 +1,5 @@
 import { useParams } from 'react-router-dom';
+import { useState, useMemo } from 'react';
 import { COLUMNS } from '@/types/kanban';
 import type { useAssignments } from '@/hooks/useAssignments';
 import type { useCanvasSync } from '@/hooks/useCanvasSync';
@@ -22,6 +23,24 @@ export default function KanbanBoard({ assignmentsHook, canvasSyncHook }: KanbanB
 
   const { assignments, addAssignment, moveAssignment, deleteAssignment, clearAll, getByColumn, setAssignments } = assignmentsHook;
   const { syncing, syncFromCanvas } = canvasSyncHook;
+
+  const [selectedSubject, setSelectedSubject] = useState<string | null>(null);
+
+  // Derive unique subjects from the To Do column only
+  const todoAssignments = getByColumn('todo');
+  const subjects = useMemo(() => {
+    const seen = new Set<string>();
+    todoAssignments.forEach(a => { if (a.subject) seen.add(a.subject); });
+    return Array.from(seen).sort();
+  }, [todoAssignments]);
+
+  // Filtered To Do assignments
+  const filteredTodo = useMemo(() =>
+    selectedSubject
+      ? todoAssignments.filter(a => a.subject === selectedSubject)
+      : todoAssignments,
+    [todoAssignments, selectedSubject]
+  );
 
   const handleClearAndResync = async () => {
     syncFromCanvas(assignments, addAssignment, setAssignments);
@@ -66,7 +85,11 @@ export default function KanbanBoard({ assignmentsHook, canvasSyncHook }: KanbanB
           <KanbanColumn
             key={col.id}
             column={col}
-            assignments={getByColumn(col.id)}
+            assignments={col.id === 'todo' ? filteredTodo : getByColumn(col.id)}
+            totalCount={col.id === 'todo' ? todoAssignments.length : undefined}
+            subjects={col.id === 'todo' ? subjects : undefined}
+            selectedSubject={col.id === 'todo' ? selectedSubject : undefined}
+            onSubjectChange={col.id === 'todo' ? setSelectedSubject : undefined}
             onMove={handleMove}
             onDelete={deleteAssignment}
             onDrop={handleMove}
