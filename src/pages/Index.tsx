@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useLocation, useParams } from 'react-router-dom';
 import KanbanBoard from '@/components/kanban/KanbanBoard';
 import { AppSidebar } from '@/components/AppSidebar';
@@ -8,6 +8,7 @@ import Stats from '@/pages/Stats';
 import { SidebarProvider, SidebarTrigger } from '@/components/ui/sidebar';
 import { useAssignments } from '@/hooks/useAssignments';
 import { useCanvasSync } from '@/hooks/useCanvasSync';
+import SplashScreen from '@/components/ui/SplashScreen';
 
 const Index = () => {
   const [chatOpen, setChatOpen] = useState(false);
@@ -20,6 +21,21 @@ const Index = () => {
 
   const assignmentsHook = useAssignments();
   const canvasSyncHook = useCanvasSync();
+
+  const [isInitialSync, setIsInitialSync] = useState(true);
+  const syncAttempted = useRef(false);
+
+  useEffect(() => {
+    if (syncAttempted.current) return;
+    syncAttempted.current = true;
+
+    // Automatically trigger the initial Canvas sync on application load
+    canvasSyncHook.syncFromCanvas(assignmentsHook.assignments, assignmentsHook.addAssignment).finally(() => {
+      // Small artificial delay to guarantee smooth aesthetic transition
+      setTimeout(() => setIsInitialSync(false), 500);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Filter assignments for the active student
   const filteredAssignments = useMemo(() => {
@@ -51,6 +67,10 @@ const Index = () => {
           return new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime();
         })
   }), [assignmentsHook, filteredAssignments]);
+
+  if (isInitialSync) {
+    return <SplashScreen />;
+  }
 
   return (
     <SidebarProvider>
