@@ -169,8 +169,10 @@ serve(async (req) => {
 
         courses.map(async (course) => {
           try {
-            const assignUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/assignments?per_page=100&include[]=submission&order_by=due_at`;
-            const assignRes = await fetch(assignUrl, { headers });
+            // Try fetching assignments 
+            let assignUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/assignments?per_page=100&include[]=submission&order_by=due_at`;
+
+            let assignRes = await fetch(assignUrl, { headers });
 
             if (!assignRes.ok) {
               const text = await assignRes.text();
@@ -178,7 +180,57 @@ serve(async (req) => {
               return;
             }
 
-            const assignments: CanvasAssignment[] = await assignRes.json();
+            let assignments: CanvasAssignment[] = await assignRes.json();
+
+            // If observer got 0 assignments, try fetching without submission include
+            // and get submissions separately
+            if (assignments.length === 0 && studentId) {
+              console.log(`Retrying "${course.name}" for ${studentName} without submission include...`);
+              assignUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/assignments?per_page=100&order_by=due_at`;
+              assignRes = await fetch(assignUrl, { headers });
+
+              if (assignRes.ok) {
+                assignments = await assignRes.json();
+                console.log(`  Retry got ${assignments.length} assignments`);
+              } else {
+                await assignRes.text();
+              }
+
+              // If still empty, try the student's submissions endpoint directly
+              if (assignments.length === 0) {
+                console.log(`Trying submissions endpoint for student ${studentId} in course ${course.id}...`);
+                const subUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/students/submissions?student_ids[]=${studentId}&per_page=100&include[]=assignment`;
+                const subRes = await fetch(subUrl, { headers });
+
+                if (subRes.ok) {
+                  const submissions = await subRes.json();
+                  console.log(`  Submissions endpoint returned ${submissions.length} items`);
+
+                  // Convert submissions to assignment format
+                  for (const sub of submissions) {
+                    if (sub.assignment) {
+                      assignments.push({
+                        id: sub.assignment.id,
+                        name: sub.assignment.name,
+                        due_at: sub.assignment.due_at,
+                        lock_at: sub.assignment.lock_at ?? null,
+                        course_id: course.id,
+                        has_submitted_submissions: sub.workflow_state !== "unsubmitted",
+                        points_possible: sub.assignment.points_possible ?? null,
+                        submission: {
+                          workflow_state: sub.workflow_state,
+                          grade: sub.grade,
+                          score: sub.score,
+                        },
+                      });
+                    }
+                  }
+                } else {
+                  const text = await subRes.text();
+                  console.log(`  Submissions endpoint failed:`, subRes.status, text);
+                }
+              }
+            }
 
             console.log(`Course "${course.name}" (${studentName}): ${assignments.length} assignments`);
 
@@ -223,15 +275,10 @@ serve(async (req) => {
 
               if (a.submission) {
                 const ws = a.submission.workflow_state;
-                const hasScore = a.submission.score != null;
-
-                if (hasScore) {
+                if (ws === "graded") {
                   status = "done";
                   grade = a.submission.grade || undefined;
-                  score = a.submission.score!;
-                } else if (ws === "graded") {
-                  status = "done";
-                  grade = a.submission.grade || undefined;
+                  if (a.submission.score != null) score = a.submission.score;
                 } else if (ws === "submitted" || ws === "pending_review") {
                   status = "done";
                 } else if (a.has_submitted_submissions) {
