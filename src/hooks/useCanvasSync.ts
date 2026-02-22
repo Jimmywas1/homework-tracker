@@ -32,7 +32,8 @@ export function useCanvasSync() {
   const syncFromCanvas = useCallback(
     async (
       existingAssignments: Assignment[],
-      addAssignment: (a: Omit<Assignment, 'id' | 'createdAt'>) => void
+      addAssignment: (a: Omit<Assignment, 'id' | 'createdAt'>) => void,
+      setAssignments?: (assignments: Assignment[]) => void
     ) => {
       setSyncing(true);
       try {
@@ -41,38 +42,63 @@ export function useCanvasSync() {
         if (error) throw error;
 
         const canvasAssignments: CanvasAssignment[] = data.assignments;
-        let added = 0;
 
-        for (const ca of canvasAssignments) {
-          // Skip if already exists (match by title + due date)
-          const exists = existingAssignments.some(
-            (a) => a.title === ca.title && a.dueDate === ca.dueDate
-          );
-          if (exists) continue;
-
-          const columnId: ColumnId =
-            ca.status === 'done' ? 'done' : ca.status === 'progress' ? 'progress' : 'todo';
-
-          addAssignment({
-            title: ca.title,
-            subject: ca.subject,
-            dueDate: ca.dueDate,
-            emoji: matchSubjectEmoji(ca.subject),
-            columnId,
-            grade: ca.grade,
-            score: ca.score,
-            totalPoints: ca.totalPoints,
-            dueStatus: ca.dueStatus,
-            canvasUrl: ca.canvasUrl,
-            studentName: ca.studentName,
+        if (setAssignments) {
+          // ✅ Clean replace: discard all stale Canvas assignments; preserve any manually-added ones
+          const manualAssignments = existingAssignments.filter(a => !a.canvasId);
+          const now = Date.now();
+          const freshCanvasAssignments: Assignment[] = canvasAssignments.map((ca, i) => {
+            // Preserve user's column overrides (e.g. if they dragged an item to In Progress)
+            const existing = existingAssignments.find(a => a.canvasId === ca.canvasId);
+            const columnId: ColumnId =
+              existing?.columnId ??
+              (ca.status === 'done' ? 'done' : ca.status === 'progress' ? 'progress' : 'todo');
+            return {
+              id: existing?.id ?? crypto.randomUUID(),
+              createdAt: existing?.createdAt ?? now + i,
+              canvasId: ca.canvasId,
+              title: ca.title,
+              subject: ca.subject,
+              dueDate: ca.dueDate,
+              emoji: matchSubjectEmoji(ca.subject),
+              columnId,
+              grade: ca.grade,
+              score: ca.score,
+              totalPoints: ca.totalPoints,
+              dueStatus: ca.dueStatus,
+              canvasUrl: ca.canvasUrl,
+              studentName: ca.studentName,
+            };
           });
-          added++;
-        }
+          setAssignments([...manualAssignments, ...freshCanvasAssignments]);
 
-        toast({
-          title: `🎓 Canvas Sync Complete`,
-          description: `Found ${canvasAssignments.length} assignments, added ${added} new ones.`,
-        });
+          toast({
+            title: `🎓 Canvas Sync Complete`,
+            description: `Loaded ${canvasAssignments.length} assignments from the current quarter.`,
+          });
+        } else {
+          // Fallback: additive merge (legacy path, should not typically hit this)
+          let added = 0;
+          for (const ca of canvasAssignments) {
+            const exists = existingAssignments.some(
+              (a) => a.title === ca.title && a.dueDate === ca.dueDate
+            );
+            if (exists) continue;
+            const columnId: ColumnId =
+              ca.status === 'done' ? 'done' : ca.status === 'progress' ? 'progress' : 'todo';
+            addAssignment({
+              title: ca.title, subject: ca.subject, dueDate: ca.dueDate,
+              emoji: matchSubjectEmoji(ca.subject), columnId, grade: ca.grade,
+              score: ca.score, totalPoints: ca.totalPoints, dueStatus: ca.dueStatus,
+              canvasUrl: ca.canvasUrl, studentName: ca.studentName,
+            });
+            added++;
+          }
+          toast({
+            title: `🎓 Canvas Sync Complete`,
+            description: `Found ${canvasAssignments.length} assignments, added ${added} new ones.`,
+          });
+        }
       } catch (err) {
         console.error('Canvas sync error:', err);
         toast({

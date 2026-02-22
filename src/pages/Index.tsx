@@ -30,7 +30,11 @@ const Index = () => {
     syncAttempted.current = true;
 
     // Automatically trigger the initial Canvas sync on application load
-    canvasSyncHook.syncFromCanvas(assignmentsHook.assignments, assignmentsHook.addAssignment).finally(() => {
+    canvasSyncHook.syncFromCanvas(
+      assignmentsHook.assignments,
+      assignmentsHook.addAssignment,
+      assignmentsHook.setAssignments
+    ).finally(() => {
       // Small artificial delay to guarantee smooth aesthetic transition
       setTimeout(() => setIsInitialSync(false), 500);
     });

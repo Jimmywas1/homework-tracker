@@ -20,13 +20,11 @@ export default function KanbanBoard({ assignmentsHook, canvasSyncHook }: KanbanB
     ? studentId.charAt(0).toUpperCase() + studentId.slice(1)
     : 'Benji';
 
-  const { assignments, addAssignment, moveAssignment, deleteAssignment, clearAll, getByColumn } = assignmentsHook;
+  const { assignments, addAssignment, moveAssignment, deleteAssignment, clearAll, getByColumn, setAssignments } = assignmentsHook;
   const { syncing, syncFromCanvas } = canvasSyncHook;
 
   const handleClearAndResync = async () => {
-    clearAll();
-    // Small delay to let state clear, then sync
-    setTimeout(() => syncFromCanvas([], addAssignment), 100);
+    syncFromCanvas(assignments, addAssignment, setAssignments);
   };
 
   const handleMove = (id: string, columnId: ColumnId) => {

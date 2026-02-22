@@ -4,6 +4,7 @@ export type DueStatus = 'overdue' | 'upcoming' | 'undated';
 
 export interface Assignment {
   id: string;
+  canvasId?: number;
   subject: string;
   title: string;
   dueDate: string;

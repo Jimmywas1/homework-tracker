@@ -67,5 +67,5 @@ export function useAssignments() {
     [assignments]
   );
 
-  return { assignments, addAssignment, moveAssignment, updateGrade, updateScore, deleteAssignment, clearAll, getByColumn };
+  return { assignments, setAssignments, addAssignment, moveAssignment, updateGrade, updateScore, deleteAssignment, clearAll, getByColumn };
 }
