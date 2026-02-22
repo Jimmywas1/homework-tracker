@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { useParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Assignment } from '@/types/kanban';
 import {
@@ -69,6 +70,11 @@ const itemVariants = {
 };
 
 export default function Stats({ assignments }: StatsProps) {
+  const { studentId } = useParams<{ studentId: string }>();
+  const activeStudent = studentId
+    ? studentId.charAt(0).toUpperCase() + studentId.slice(1)
+    : 'Benji';
+
   const stats = useMemo(() => {
     const total = assignments.length;
     const done = assignments.filter(a => a.columnId === 'done');
@@ -166,7 +172,7 @@ export default function Stats({ assignments }: StatsProps) {
                 </div>
                 <div className="flex-1 text-center md:text-left">
                   <h1 className="font-display font-bold text-2xl md:text-3xl text-foreground mb-1">
-                    Benji's Report Card 📊
+                    {activeStudent}'s Report Card 📊
                   </h1>
                   <p className="text-muted-foreground font-body text-sm mb-3">
                     {stats.total} assignments tracked · {stats.graded} graded

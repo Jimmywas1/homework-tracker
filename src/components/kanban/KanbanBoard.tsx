@@ -1,3 +1,4 @@
+import { useParams } from 'react-router-dom';
 import { COLUMNS } from '@/types/kanban';
 import type { useAssignments } from '@/hooks/useAssignments';
 import type { useCanvasSync } from '@/hooks/useCanvasSync';
@@ -14,6 +15,11 @@ interface KanbanBoardProps {
 }
 
 export default function KanbanBoard({ assignmentsHook, canvasSyncHook }: KanbanBoardProps) {
+  const { studentId } = useParams<{ studentId: string }>();
+  const activeStudent = studentId
+    ? studentId.charAt(0).toUpperCase() + studentId.slice(1)
+    : 'Benji';
+
   const { assignments, addAssignment, moveAssignment, deleteAssignment, clearAll, getByColumn } = assignmentsHook;
   const { syncing, syncFromCanvas } = canvasSyncHook;
 
@@ -35,7 +41,7 @@ export default function KanbanBoard({ assignmentsHook, canvasSyncHook }: KanbanB
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div>
             <h1 className="font-display font-bold text-2xl md:text-3xl text-foreground">
-              Benji's Homework Tracker ✨
+              {activeStudent}'s Homework Tracker ✨
             </h1>
             <p className="text-muted-foreground text-sm font-body">
               Stay on top of every assignment!

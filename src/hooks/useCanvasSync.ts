@@ -15,6 +15,7 @@ interface CanvasAssignment {
   totalPoints?: number;
   dueStatus: DueStatus;
   canvasUrl?: string;
+  studentName?: string;
 }
 
 function matchSubjectEmoji(subject: string): string {
@@ -63,6 +64,7 @@ export function useCanvasSync() {
             totalPoints: ca.totalPoints,
             dueStatus: ca.dueStatus,
             canvasUrl: ca.canvasUrl,
+            studentName: ca.studentName,
           });
           added++;
         }

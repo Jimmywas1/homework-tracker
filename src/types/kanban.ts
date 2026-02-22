@@ -15,6 +15,7 @@ export interface Assignment {
   createdAt: number;
   dueStatus?: DueStatus;
   canvasUrl?: string;
+  studentName?: string;
 }
 
 export interface Column {

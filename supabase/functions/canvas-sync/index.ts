@@ -55,7 +55,7 @@ serve(async (req) => {
     };
 
     // Check if this is an observer account by looking for observees
-    let observeeId: number | null = null;
+    let observees: CanvasUser[] = [];
     try {
       const selfRes = await fetch(`${CANVAS_BASE_URL}/api/v1/users/self`, { headers });
       if (selfRes.ok) {
@@ -70,10 +70,9 @@ serve(async (req) => {
         { headers }
       );
       if (observeesRes.ok) {
-        const observees: CanvasUser[] = await observeesRes.json();
+        observees = await observeesRes.json();
         if (observees.length > 0) {
-          observeeId = observees[0].id;
-          console.log(`Observer account detected. Using observee: ${observees[0].name} (id: ${observeeId})`);
+          console.log(`Observer account detected. Found ${observees.length} observees.`);
         }
       } else {
         // Not an observer or endpoint not available — that's fine
@@ -83,23 +82,6 @@ serve(async (req) => {
       console.log("Observee check skipped:", err);
     }
 
-    // Fetch active courses — if observer, use the student's perspective
-    const coursesUrl = observeeId
-      ? `${CANVAS_BASE_URL}/api/v1/users/${observeeId}/courses?enrollment_state=active&per_page=50&include[]=total_scores`
-      : `${CANVAS_BASE_URL}/api/v1/courses?enrollment_state=active&per_page=50`;
-
-    const coursesRes = await fetch(coursesUrl, { headers });
-
-    if (!coursesRes.ok) {
-      const text = await coursesRes.text();
-      console.error("Canvas courses error:", coursesRes.status, text);
-      throw new Error(`Failed to fetch courses from Canvas (${coursesRes.status})`);
-    }
-
-    const courses: CanvasCourse[] = await coursesRes.json();
-    console.log(`Found ${courses.length} courses`);
-
-    // Fetch assignments for each course
     const allAssignments: Array<{
       canvasId: number;
       title: string;
@@ -111,148 +93,178 @@ serve(async (req) => {
       totalPoints?: number;
       dueStatus: "overdue" | "upcoming" | "undated";
       canvasUrl: string;
+      studentName?: string;
     }> = [];
 
-    await Promise.all(
-      courses.map(async (course) => {
-        try {
-          // Try fetching assignments — for observers, also try with as_user_id
-          let assignUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/assignments?per_page=100&include[]=submission&order_by=due_at`;
+    // If we have observees, iter over them. Otherwise, run once as the primary user.
+    const usersToFetch = observees.length > 0 ? observees : [{ id: null, name: "Student" }];
 
-          let assignRes = await fetch(assignUrl, { headers });
+    for (const user of usersToFetch) {
+      const studentId = user.id;
+      const studentName = user.name;
+      
+      console.log(`Fetching courses for student: ${studentName}`);
 
-          if (!assignRes.ok) {
-            const text = await assignRes.text();
-            console.error(`Assignments error for "${course.name}" (${course.id}):`, assignRes.status, text);
-            return;
-          }
+      // Fetch active courses
+      const coursesUrl = studentId
+        ? `${CANVAS_BASE_URL}/api/v1/users/${studentId}/courses?enrollment_state=active&per_page=50&include[]=total_scores`
+        : `${CANVAS_BASE_URL}/api/v1/courses?enrollment_state=active&per_page=50`;
 
-          let assignments: CanvasAssignment[] = await assignRes.json();
+      const coursesRes = await fetch(coursesUrl, { headers });
 
-          // If observer got 0 assignments, try fetching without submission include
-          // and get submissions separately
-          if (assignments.length === 0 && observeeId) {
-            console.log(`Retrying "${course.name}" without submission include...`);
-            assignUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/assignments?per_page=100&order_by=due_at`;
-            assignRes = await fetch(assignUrl, { headers });
+      if (!coursesRes.ok) {
+        const text = await coursesRes.text();
+        console.error(`Canvas courses error for ${studentName}:`, coursesRes.status, text);
+        continue; // Skip to next user
+      }
 
-            if (assignRes.ok) {
-              assignments = await assignRes.json();
-              console.log(`  Retry got ${assignments.length} assignments`);
-            } else {
-              await assignRes.text();
+      const courses: CanvasCourse[] = await coursesRes.json();
+      console.log(`Found ${courses.length} courses for ${studentName}`);
+
+      await Promise.all(
+        courses.map(async (course) => {
+          try {
+            // Try fetching assignments 
+            let assignUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/assignments?per_page=100&include[]=submission&order_by=due_at`;
+
+            let assignRes = await fetch(assignUrl, { headers });
+
+            if (!assignRes.ok) {
+              const text = await assignRes.text();
+              console.error(`Assignments error for "${course.name}" (${course.id}):`, assignRes.status, text);
+              return;
             }
 
-            // If still empty, try the student's submissions endpoint directly
-            if (assignments.length === 0) {
-              console.log(`Trying submissions endpoint for student ${observeeId} in course ${course.id}...`);
-              const subUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/students/submissions?student_ids[]=${observeeId}&per_page=100&include[]=assignment`;
-              const subRes = await fetch(subUrl, { headers });
+            let assignments: CanvasAssignment[] = await assignRes.json();
 
-              if (subRes.ok) {
-                const submissions = await subRes.json();
-                console.log(`  Submissions endpoint returned ${submissions.length} items`);
-                
-                // Convert submissions to assignment format
-                for (const sub of submissions) {
-                  if (sub.assignment) {
-                    assignments.push({
-                      id: sub.assignment.id,
-                      name: sub.assignment.name,
-                      due_at: sub.assignment.due_at,
-                      course_id: course.id,
-                      has_submitted_submissions: sub.workflow_state !== "unsubmitted",
-                      points_possible: sub.assignment.points_possible ?? null,
-                      submission: {
-                        workflow_state: sub.workflow_state,
-                        grade: sub.grade,
-                        score: sub.score,
-                      },
-                    });
-                  }
-                }
+            // If observer got 0 assignments, try fetching without submission include
+            // and get submissions separately
+            if (assignments.length === 0 && studentId) {
+              console.log(`Retrying "${course.name}" for ${studentName} without submission include...`);
+              assignUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/assignments?per_page=100&order_by=due_at`;
+              assignRes = await fetch(assignUrl, { headers });
+
+              if (assignRes.ok) {
+                assignments = await assignRes.json();
+                console.log(`  Retry got ${assignments.length} assignments`);
               } else {
-                const text = await subRes.text();
-                console.log(`  Submissions endpoint failed:`, subRes.status, text);
+                await assignRes.text();
               }
-            }
-          }
 
-          console.log(`Course "${course.name}": ${assignments.length} assignments`);
+              // If still empty, try the student's submissions endpoint directly
+              if (assignments.length === 0) {
+                console.log(`Trying submissions endpoint for student ${studentId} in course ${course.id}...`);
+                const subUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/students/submissions?student_ids[]=${studentId}&per_page=100&include[]=assignment`;
+                const subRes = await fetch(subUrl, { headers });
 
-          for (const a of assignments) {
-            const now = new Date();
-            let dueDateStr = "";
-            let dueStatus: "overdue" | "upcoming" | "undated" = "undated";
-
-            if (a.due_at) {
-              const dueDate = new Date(a.due_at);
-              const daysPast = (now.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24);
-              if (daysPast > 90) continue;
-
-              dueDateStr = dueDate.toISOString().split("T")[0];
-              dueStatus = dueDate < now ? "overdue" : "upcoming";
-            }
-
-            let status: "todo" | "progress" | "done" = "todo";
-            let grade: string | undefined;
-            let score: number | undefined;
-            let totalPoints: number | undefined;
-
-            if (a.points_possible != null) {
-              totalPoints = a.points_possible;
-            }
-
-            if (a.submission) {
-              const ws = a.submission.workflow_state;
-              if (ws === "graded") {
-                status = "done";
-                grade = a.submission.grade || undefined;
-                if (a.submission.score != null) score = a.submission.score;
-              } else if (ws === "submitted" || ws === "pending_review") {
-                status = "done";
-              } else if (a.has_submitted_submissions) {
-                status = "done";
+                if (subRes.ok) {
+                  const submissions = await subRes.json();
+                  console.log(`  Submissions endpoint returned ${submissions.length} items`);
+                  
+                  // Convert submissions to assignment format
+                  for (const sub of submissions) {
+                    if (sub.assignment) {
+                      assignments.push({
+                        id: sub.assignment.id,
+                        name: sub.assignment.name,
+                        due_at: sub.assignment.due_at,
+                        course_id: course.id,
+                        has_submitted_submissions: sub.workflow_state !== "unsubmitted",
+                        points_possible: sub.assignment.points_possible ?? null,
+                        submission: {
+                          workflow_state: sub.workflow_state,
+                          grade: sub.grade,
+                          score: sub.score,
+                        },
+                      });
+                    }
+                  }
+                } else {
+                  const text = await subRes.text();
+                  console.log(`  Submissions endpoint failed:`, subRes.status, text);
+                }
               }
             }
 
-            const subject = course.name
-              .replace(/\s*H\*\s*/g, " ")
-              .replace(/\s*\(.*?\)\s*/g, "")
-              .replace(/\s*-\s*\d{4}-\d{2,4}\s*/g, "")
-              .replace(/\s*-\s*[A-Z][a-z]+(\s|$).*$/g, "")
-              .replace(/^S\d+\s+/i, "")
-              .replace(/Honors/gi, "Hon.")
-              .replace(/Language Arts/gi, "Lang Arts")
-              .replace(/Physical Science/gi, "Phys Sci")
-              .replace(/Civics\/Economics/gi, "Civics/Econ")
-              .replace(/Technological/gi, "Tech")
-              .replace(/\s+/g, " ")
-              .trim();
+            console.log(`Course "${course.name}" (${studentName}): ${assignments.length} assignments`);
 
-            allAssignments.push({
-              canvasId: a.id,
-              title: a.name,
-              subject,
-              dueDate: dueDateStr,
-              status,
-              grade,
-              score,
-              totalPoints,
-              dueStatus,
-              canvasUrl: `${CANVAS_BASE_URL}/courses/${course.id}/assignments/${a.id}`,
-            });
+            for (const a of assignments) {
+              const now = new Date();
+              let dueDateStr = "";
+              let dueStatus: "overdue" | "upcoming" | "undated" = "undated";
+
+              if (a.due_at) {
+                const dueDate = new Date(a.due_at);
+                const daysPast = (now.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24);
+                if (daysPast > 90) continue;
+
+                dueDateStr = dueDate.toISOString().split("T")[0];
+                dueStatus = dueDate < now ? "overdue" : "upcoming";
+              }
+
+              let status: "todo" | "progress" | "done" = "todo";
+              let grade: string | undefined;
+              let score: number | undefined;
+              let totalPoints: number | undefined;
+
+              if (a.points_possible != null) {
+                totalPoints = a.points_possible;
+              }
+
+              if (a.submission) {
+                const ws = a.submission.workflow_state;
+                if (ws === "graded") {
+                  status = "done";
+                  grade = a.submission.grade || undefined;
+                  if (a.submission.score != null) score = a.submission.score;
+                } else if (ws === "submitted" || ws === "pending_review") {
+                  status = "done";
+                } else if (a.has_submitted_submissions) {
+                  status = "done";
+                }
+              }
+
+              const subject = course.name
+                .replace(/\s*H\*\s*/g, " ")
+                .replace(/\s*\(.*?\)\s*/g, "")
+                .replace(/\s*-\s*\d{4}-\d{2,4}\s*/g, "")
+                .replace(/\s*-\s*[A-Z][a-z]+(\s|$).*$/g, "")
+                .replace(/^S\d+\s+/i, "")
+                .replace(/Honors/gi, "Hon.")
+                .replace(/Language Arts/gi, "Lang Arts")
+                .replace(/Physical Science/gi, "Phys Sci")
+                .replace(/Civics\/Economics/gi, "Civics/Econ")
+                .replace(/Technological/gi, "Tech")
+                .replace(/\s+/g, " ")
+                .trim();
+
+              const firstName = studentName === "Student" ? undefined : studentName.split(' ')[0];
+
+              allAssignments.push({
+                canvasId: a.id,
+                title: a.name,
+                subject,
+                dueDate: dueDateStr,
+                status,
+                grade,
+                score,
+                totalPoints,
+                dueStatus,
+                canvasUrl: `${CANVAS_BASE_URL}/courses/${course.id}/assignments/${a.id}`,
+                studentName: firstName,
+              });
+            }
+          } catch (err) {
+            console.error(`Error fetching assignments for course ${course.id}:`, err);
           }
-        } catch (err) {
-          console.error(`Error fetching assignments for course ${course.id}:`, err);
-        }
-      })
-    );
+        })
+      );
+    }
 
     console.log(`Total assignments collected: ${allAssignments.length}`);
 
     return new Response(
-      JSON.stringify({ courses: courses.length, assignments: allAssignments }),
+      JSON.stringify({ assignments: allAssignments }),
       {
         status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },

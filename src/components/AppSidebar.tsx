@@ -1,4 +1,5 @@
 import { BookOpen, LayoutDashboard, MessageCircle, Info, BarChart3 } from 'lucide-react';
+import { useParams } from 'react-router-dom';
 import { NavLink } from '@/components/NavLink';
 import {
   Sidebar,
@@ -9,9 +10,18 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarMenuSub,
+  SidebarMenuSubItem,
+  SidebarMenuSubButton,
   SidebarHeader,
   SidebarFooter,
 } from '@/components/ui/sidebar';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible';
+import { ChevronRight } from 'lucide-react';
 
 interface AppSidebarProps {
   onToggleChat: () => void;
@@ -19,6 +29,11 @@ interface AppSidebarProps {
 }
 
 export function AppSidebar({ onToggleChat, chatOpen }: AppSidebarProps) {
+  const { studentId } = useParams<{ studentId: string }>();
+  const activeStudent = studentId
+    ? studentId.charAt(0).toUpperCase() + studentId.slice(1)
+    : 'Benji';
+
   return (
     <Sidebar className="border-r border-border bg-sidebar">
       <SidebarHeader className="p-5 border-b border-border">
@@ -28,7 +43,7 @@ export function AppSidebar({ onToggleChat, chatOpen }: AppSidebarProps) {
           </div>
           <div>
             <h1 className="font-display font-bold text-lg text-foreground leading-tight">
-              Benji's
+              {activeStudent}'s
             </h1>
             <p className="text-xs text-muted-foreground font-body">
               Homework Tracker
@@ -44,23 +59,69 @@ export function AppSidebar({ onToggleChat, chatOpen }: AppSidebarProps) {
           </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              <SidebarMenuItem>
-                <SidebarMenuButton asChild>
-                  <NavLink to="/" end className="font-body rounded-lg" activeClassName="bg-primary/10 text-primary font-medium">
-                    <LayoutDashboard className="mr-2 h-4 w-4" />
-                    <span>Board</span>
-                  </NavLink>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
+              {/* BENJI SECTION */}
+              <Collapsible defaultOpen className="group/collapsible">
+                <SidebarMenuItem>
+                  <CollapsibleTrigger asChild>
+                    <SidebarMenuButton className="font-body font-medium">
+                      <span>👦 Benji</span>
+                      <ChevronRight className="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
+                    </SidebarMenuButton>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <SidebarMenuSub>
+                      <SidebarMenuSubItem>
+                        <SidebarMenuSubButton asChild>
+                          <NavLink to="/benji/board" end className="font-body rounded-md" activeClassName="bg-primary/10 text-primary font-medium">
+                            <LayoutDashboard className="mr-2 h-4 w-4" />
+                            <span>Board</span>
+                          </NavLink>
+                        </SidebarMenuSubButton>
+                      </SidebarMenuSubItem>
+                      <SidebarMenuSubItem>
+                        <SidebarMenuSubButton asChild>
+                          <NavLink to="/benji/stats" className="font-body rounded-md" activeClassName="bg-primary/10 text-primary font-medium">
+                            <BarChart3 className="mr-2 h-4 w-4" />
+                            <span>Stats</span>
+                          </NavLink>
+                        </SidebarMenuSubButton>
+                      </SidebarMenuSubItem>
+                    </SidebarMenuSub>
+                  </CollapsibleContent>
+                </SidebarMenuItem>
+              </Collapsible>
 
-              <SidebarMenuItem>
-                <SidebarMenuButton asChild>
-                  <NavLink to="/stats" className="font-body rounded-lg" activeClassName="bg-primary/10 text-primary font-medium">
-                    <BarChart3 className="mr-2 h-4 w-4" />
-                    <span>Stats</span>
-                  </NavLink>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
+              {/* LEVI SECTION */}
+              <Collapsible defaultOpen className="group/collapsible mt-2">
+                <SidebarMenuItem>
+                  <CollapsibleTrigger asChild>
+                    <SidebarMenuButton className="font-body font-medium">
+                      <span>👦 Levi</span>
+                      <ChevronRight className="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
+                    </SidebarMenuButton>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <SidebarMenuSub>
+                      <SidebarMenuSubItem>
+                        <SidebarMenuSubButton asChild>
+                          <NavLink to="/levi/board" end className="font-body rounded-md" activeClassName="bg-primary/10 text-primary font-medium">
+                            <LayoutDashboard className="mr-2 h-4 w-4" />
+                            <span>Board</span>
+                          </NavLink>
+                        </SidebarMenuSubButton>
+                      </SidebarMenuSubItem>
+                      <SidebarMenuSubItem>
+                        <SidebarMenuSubButton asChild>
+                          <NavLink to="/levi/stats" className="font-body rounded-md" activeClassName="bg-primary/10 text-primary font-medium">
+                            <BarChart3 className="mr-2 h-4 w-4" />
+                            <span>Stats</span>
+                          </NavLink>
+                        </SidebarMenuSubButton>
+                      </SidebarMenuSubItem>
+                    </SidebarMenuSub>
+                  </CollapsibleContent>
+                </SidebarMenuItem>
+              </Collapsible>
 
               <SidebarMenuItem>
                 <SidebarMenuButton
@@ -91,7 +152,7 @@ export function AppSidebar({ onToggleChat, chatOpen }: AppSidebarProps) {
       <SidebarFooter className="p-4 border-t border-border">
         <div className="flex items-center gap-2 text-xs text-muted-foreground font-body">
           <span>✨</span>
-          <span>Stay awesome, Benji!</span>
+          <span>Stay awesome, guys!</span>
         </div>
       </SidebarFooter>
     </Sidebar>
