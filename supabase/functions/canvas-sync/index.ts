@@ -169,10 +169,7 @@ serve(async (req) => {
 
         courses.map(async (course) => {
           try {
-            // For observer accounts, pass student_ids[] so Canvas returns the *student's*
-            // submission for each assignment (not the observer/parent's own submission).
-            const studentParam = studentId ? `&student_ids[]=${studentId}` : "";
-            const assignUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/assignments?per_page=100&include[]=submission${studentParam}&order_by=due_at`;
+            const assignUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/assignments?per_page=100&include[]=submission&order_by=due_at`;
             const assignRes = await fetch(assignUrl, { headers });
 
             if (!assignRes.ok) {
