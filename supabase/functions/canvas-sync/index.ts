@@ -38,6 +38,11 @@ interface CanvasCourse {
   }>;
 }
 
+interface CanvasUser {
+  id: number;
+  name: string;
+}
+
 function cleanSubjectName(courseName: string): string {
   return courseName
     .replace(/\s*H\*\s*/g, " ")
@@ -54,9 +59,28 @@ function cleanSubjectName(courseName: string): string {
     .trim();
 }
 
-interface CanvasUser {
-  id: number;
-  name: string;
+/** Pick the active grading period from a list, or the closest one if none is current. */
+function resolveActiveGP(gpList: any[]): any | null {
+  if (!gpList || gpList.length === 0) return null;
+  const now = Date.now();
+  let gp = gpList.find((g: any) => now >= new Date(g.start_date).getTime() && now <= new Date(g.end_date).getTime());
+  if (!gp) {
+    gp = [...gpList].sort((a: any, b: any) => {
+      const dA = Math.min(Math.abs(now - new Date(a.start_date).getTime()), Math.abs(now - new Date(a.end_date).getTime()));
+      const dB = Math.min(Math.abs(now - new Date(b.start_date).getTime()), Math.abs(now - new Date(b.end_date).getTime()));
+      return dA - dB;
+    })[0];
+  }
+  return gp ?? null;
+}
+
+/** Parse grades out of a Canvas enrollment object. */
+function parseGrades(e: any): { score: number | null; final: number | null; grade: string | null } {
+  return {
+    score: e?.grades?.override_score ?? e?.grades?.current_score ?? e?.computed_current_score ?? null,
+    final: e?.grades?.final_score ?? e?.computed_final_score ?? null,
+    grade: e?.grades?.override_grade ?? e?.grades?.current_grade ?? e?.computed_current_grade ?? null,
+  };
 }
 
 serve(async (req) => {
@@ -66,15 +90,10 @@ serve(async (req) => {
 
   try {
     const CANVAS_API_TOKEN = Deno.env.get("CANVAS_API_TOKEN");
-    if (!CANVAS_API_TOKEN) {
-      throw new Error("CANVAS_API_TOKEN is not configured");
-    }
+    if (!CANVAS_API_TOKEN) throw new Error("CANVAS_API_TOKEN is not configured");
 
     let CANVAS_BASE_URL = Deno.env.get("CANVAS_BASE_URL");
-    if (!CANVAS_BASE_URL) {
-      throw new Error("CANVAS_BASE_URL is not configured");
-    }
-
+    if (!CANVAS_BASE_URL) throw new Error("CANVAS_BASE_URL is not configured");
     CANVAS_BASE_URL = CANVAS_BASE_URL.replace(/\/+$/, "");
 
     const headers = {
@@ -82,29 +101,15 @@ serve(async (req) => {
       Accept: "application/json",
     };
 
-    // Check if this is an observer account by looking for observees
+    // Fetch observees in parallel with nothing else — just one call now (self fetch removed, it was only a console log)
     let observees: CanvasUser[] = [];
     try {
-      const selfRes = await fetch(`${CANVAS_BASE_URL}/api/v1/users/self`, { headers });
-      if (selfRes.ok) {
-        const self = await selfRes.json();
-        console.log("Authenticated as:", self.name, `(id: ${self.id})`);
-      } else {
-        await selfRes.text();
-      }
-
-      const observeesRes = await fetch(
-        `${CANVAS_BASE_URL}/api/v1/users/self/observees?per_page=10`,
-        { headers }
-      );
+      const observeesRes = await fetch(`${CANVAS_BASE_URL}/api/v1/users/self/observees?per_page=10`, { headers });
       if (observeesRes.ok) {
         observees = await observeesRes.json();
-        if (observees.length > 0) {
-          console.log(`Observer account detected. Found ${observees.length} observees.`);
-        }
+        if (observees.length > 0) console.log(`Observer account. Found ${observees.length} observees.`);
       } else {
-        // Not an observer or endpoint not available — that's fine
-        await observeesRes.text();
+        await observeesRes.text(); // drain
       }
     } catch (err) {
       console.log("Observee check skipped:", err);
@@ -133,215 +138,122 @@ serve(async (req) => {
       studentName?: string;
     }> = [];
 
-    // If we have observees, iter over them. Otherwise, run once as the primary user.
     const usersToFetch = observees.length > 0 ? observees : [{ id: null, name: "Student" }];
 
-    for (const user of usersToFetch) {
+    // ── Process ALL students in PARALLEL (was sequential — big win for Benji+Levi) ──
+    await Promise.all(usersToFetch.map(async (user) => {
       const studentId = user.id;
       const studentName = user.name;
+      const firstName = studentName === "Student" ? undefined : studentName.split(" ")[0];
 
-      console.log(`Fetching courses for student: ${studentName}`);
+      console.log(`Fetching courses for: ${studentName}`);
 
-      // Fetch active courses — include total_scores so each course object
-      // contains embedded enrollment data with computed grade percentages.
+      // Fetch courses — grading_periods embedded so we DON'T need a separate GP fetch below
       const coursesUrl = studentId
         ? `${CANVAS_BASE_URL}/api/v1/users/${studentId}/courses?enrollment_state=active&per_page=50&include[]=total_scores&include[]=grading_periods`
         : `${CANVAS_BASE_URL}/api/v1/courses?enrollment_state=active&per_page=50&include[]=total_scores&include[]=grading_periods`;
 
       const coursesRes = await fetch(coursesUrl, { headers });
-
       if (!coursesRes.ok) {
-        const text = await coursesRes.text();
-        console.error(`Canvas courses error for ${studentName}:`, coursesRes.status, text);
-        continue; // Skip to next user
+        console.error(`Canvas courses error for ${studentName}:`, coursesRes.status, await coursesRes.text());
+        return;
       }
-
       const courses: CanvasCourse[] = await coursesRes.json();
       console.log(`Found ${courses.length} courses for ${studentName}`);
 
-      const firstName = studentName === "Student" ? undefined : studentName.split(' ')[0];
-
-      // ── Resolve active grading period first (needed for quarter-specific grades) ──
-      let activeGradingPeriodId: number | null = null;
+      // ── Resolve active quarter for assignment date filtering ──
+      // Use grading periods already embedded in the first course — NO extra fetch needed.
       let activeQuarterStart: Date | null = null;
       let activeQuarterEnd: Date | null = null;
-      let activeQuarterTitle: string = "Unknown Quarter";
-
-      if (courses.length > 0) {
-        try {
-          const gpRes = await fetch(
-            `${CANVAS_BASE_URL}/api/v1/courses/${courses[0].id}?include[]=grading_periods`,
-            { headers }
-          );
-          if (gpRes.ok) {
-            const courseData = await gpRes.json();
-            const gradingPeriods: any[] = courseData.grading_periods ?? [];
-            if (gradingPeriods.length > 0) {
-              const now = new Date();
-              let targetQuarter = gradingPeriods.find(gp => {
-                const s = new Date(gp.start_date);
-                const e = new Date(gp.end_date);
-                return now >= s && now <= e;
-              });
-              if (!targetQuarter) {
-                targetQuarter = [...gradingPeriods].sort((a, b) => {
-                  const distA = Math.min(
-                    Math.abs(now.getTime() - new Date(a.start_date).getTime()),
-                    Math.abs(now.getTime() - new Date(a.end_date).getTime())
-                  );
-                  const distB = Math.min(
-                    Math.abs(now.getTime() - new Date(b.start_date).getTime()),
-                    Math.abs(now.getTime() - new Date(b.end_date).getTime())
-                  );
-                  return distA - distB;
-                })[0];
-              }
-              if (targetQuarter) {
-                activeGradingPeriodId = targetQuarter.id;
-                activeQuarterStart = new Date(targetQuarter.start_date);
-                activeQuarterEnd = new Date(targetQuarter.end_date);
-                activeQuarterTitle = targetQuarter.title || "Target Quarter";
-                console.log(`Active quarter for ${studentName}: ${activeQuarterTitle} (id=${activeGradingPeriodId})`);
-              }
-            }
-          }
-        } catch (err) {
-          console.error(`Failed to resolve grading periods for ${studentName}:`, err);
-        }
+      const embeddedGP = resolveActiveGP(courses[0]?.grading_periods ?? []);
+      if (embeddedGP) {
+        activeQuarterStart = new Date(embeddedGP.start_date);
+        activeQuarterEnd = new Date(embeddedGP.end_date);
+        console.log(`Active quarter for ${studentName}: ${embeddedGP.title}`);
       }
 
-      // ── Fetch quarter-specific enrollment grades ────────────────────────────
+      // ── Fetch enrollment grades ──
       const courseGradeMap = new Map<number, { currentScore: number | null; finalScore: number | null; currentGrade: string | null }>();
+
       if (studentId) {
-        // Per-course enrollment — most reliable for observer accounts.
-        // Each course resolves its OWN active grading period ID so subjects that use
-        // different Canvas grading period records (same quarter, different ID) are handled correctly.
-        await Promise.all(courses.map(async (course) => {
-          try {
-            // 1. Try grading periods already embedded by include[]=grading_periods on the courses list
-            let gpList: any[] = course.grading_periods ?? [];
-
-            // 2. If not embedded (API didn't return them), fetch for this specific course
-            if (gpList.length === 0) {
-              try {
-                const gpCourseRes = await fetch(
-                  `${CANVAS_BASE_URL}/api/v1/courses/${course.id}?include[]=grading_periods`,
-                  { headers }
-                );
-                if (gpCourseRes.ok) {
-                  gpList = (await gpCourseRes.json()).grading_periods ?? [];
-                }
-              } catch { /* silently fall back to global */ }
+        // Strategy 1: Bulk user-level fetch — one call gets all course grades at once.
+        try {
+          const bulkRes = await fetch(
+            `${CANVAS_BASE_URL}/api/v1/users/${studentId}/enrollments?include[]=current_grades&state[]=active&per_page=100`,
+            { headers }
+          );
+          if (bulkRes.ok) {
+            const enrollments: any[] = await bulkRes.json();
+            for (const e of enrollments) {
+              const { score, final, grade } = parseGrades(e);
+              if (score !== null || grade !== null) {
+                courseGradeMap.set(e.course_id, { currentScore: score, finalScore: final, currentGrade: grade });
+              }
             }
+            console.log(`Bulk grades: ${courseGradeMap.size} courses for ${studentName}`);
+          }
+        } catch (err) {
+          console.error(`Bulk enrollment error for ${studentName}:`, err);
+        }
 
-            // 3. Pick the active (or closest) grading period for this course.
-            // Default to NO filter (YTD grade) — only add the GP filter when we have
-            // confirmed grading periods for this specific course. Using the global GP ID
-            // on a course that doesn't use grading periods returns a false 0, not null.
-            let courseGPParam = "";
-            if (gpList.length > 0) {
-              const now = new Date();
-              let targetGP: any = gpList.find((gp: any) =>
-                now >= new Date(gp.start_date) && now <= new Date(gp.end_date)
+        // Strategy 2: Per-course fallback ONLY for courses still missing after bulk.
+        // This handles the case where the bulk call lacks quarter-specific breakdown.
+        const missingCourses = courses.filter(c => !courseGradeMap.has(c.id));
+        if (missingCourses.length > 0) {
+          await Promise.all(missingCourses.map(async (course) => {
+            try {
+              // Resolve a quarter-specific GP for this course (already embedded in courses fetch)
+              const gpList: any[] = course.grading_periods ?? [];
+              const targetGP = resolveActiveGP(gpList);
+              const gpParam = targetGP ? `&grading_period_id=${targetGP.id}` : "";
+
+              const enrollRes = await fetch(
+                `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/enrollments?user_id=${studentId}&include[]=current_grades${gpParam}&per_page=5`,
+                { headers }
               );
-              if (!targetGP) {
-                targetGP = [...gpList].sort((a: any, b: any) => {
-                  const distA = Math.min(
-                    Math.abs(now.getTime() - new Date(a.start_date).getTime()),
-                    Math.abs(now.getTime() - new Date(a.end_date).getTime())
-                  );
-                  const distB = Math.min(
-                    Math.abs(now.getTime() - new Date(b.start_date).getTime()),
-                    Math.abs(now.getTime() - new Date(b.end_date).getTime())
-                  );
-                  return distA - distB;
-                })[0];
-              }
-              if (targetGP) {
-                courseGPParam = `&grading_period_id=${targetGP.id}`;
-                console.log(`Course "${cleanSubjectName(course.name)}" GP: ${targetGP.title} (id=${targetGP.id})`);
-              }
-            }
+              if (!enrollRes.ok) return;
 
-            const enrollRes = await fetch(
-              `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/enrollments?user_id=${studentId}&include[]=current_grades${courseGPParam}&per_page=5`,
-              { headers }
-            );
-            if (enrollRes.ok) {
               const enrollments: any[] = await enrollRes.json();
               const e = enrollments[0];
-              if (e) {
-                let score: number | null = e.grades?.override_score ?? e.grades?.current_score ?? e.computed_current_score ?? null;
-                let final: number | null = e.grades?.final_score ?? e.computed_final_score ?? null;
-                const grade: string | null = e.grades?.override_grade ?? e.grades?.current_grade ?? e.computed_current_grade ?? null;
+              if (!e) return;
 
-                // GP filter returned all-zero (teacher hasn't posted Q grades yet).
-                // Fall back to YTD (no GP filter) to get the last meaningful grade.
-                if (courseGPParam && score === 0 && final === 0 && !grade) {
-                  const ytdRes = await fetch(
-                    `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/enrollments?user_id=${studentId}&include[]=current_grades&per_page=5`,
-                    { headers }
-                  );
-                  if (ytdRes.ok) {
-                    const ytdE = (await ytdRes.json())[0];
-                    const ytdScore: number | null = ytdE?.grades?.override_score ?? ytdE?.grades?.current_score ?? ytdE?.computed_current_score ?? null;
-                    if (ytdScore !== null && ytdScore > 0) {
-                      score = ytdScore;
-                      final = ytdE?.grades?.final_score ?? ytdE?.computed_final_score ?? null;
-                      console.log(`GP=0 fallback "${cleanSubjectName(course.name)}" (${studentName}): YTD=${score}%`);
-                    }
-                  }
-                }
+              let { score, final, grade } = parseGrades(e);
 
-                if (score !== null || grade !== null) {
-                  courseGradeMap.set(course.id, { currentScore: score, finalScore: final, currentGrade: grade });
-                  console.log(`Grade "${cleanSubjectName(course.name)}" (${studentName}): current=${score}% final=${final}%`);
-                }
-              }
-            }
-          } catch (err) {
-            console.error(`Grade fetch error course ${course.id}:`, err);
-          }
-        }));
-
-        // User-level fallback for any courses still missing
-        if (courseGradeMap.size < courses.length) {
-          try {
-            const enrollRes = await fetch(
-              `${CANVAS_BASE_URL}/api/v1/users/${studentId}/enrollments?include[]=current_grades&state[]=active&per_page=100`,
-              { headers }
-            );
-            if (enrollRes.ok) {
-              const enrollments: any[] = await enrollRes.json();
-              for (const e of enrollments) {
-                if (!courseGradeMap.has(e.course_id)) {
-                  const score: number | null = e.grades?.override_score ?? e.grades?.current_score ?? e.computed_current_score ?? null;
-                  const final: number | null = e.grades?.final_score ?? e.computed_final_score ?? null;
-                  const grade: string | null = e.grades?.override_grade ?? e.grades?.current_grade ?? e.computed_current_grade ?? null;
-                  if (score !== null || grade !== null) {
-                    courseGradeMap.set(e.course_id, { currentScore: score, finalScore: final, currentGrade: grade });
-                    const name = courses.find(c => c.id === e.course_id)?.name ?? String(e.course_id);
-                    console.log(`Grade fallback "${cleanSubjectName(name)}" (${studentName}): current=${score}% final=${final}%`);
+              // GP returned all-zero: fall back to YTD grade
+              if (gpParam && score === 0 && final === 0 && !grade) {
+                const ytdRes = await fetch(
+                  `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/enrollments?user_id=${studentId}&include[]=current_grades&per_page=5`,
+                  { headers }
+                );
+                if (ytdRes.ok) {
+                  const ytdE = (await ytdRes.json())[0];
+                  const ytd = parseGrades(ytdE);
+                  if (ytd.score !== null && ytd.score > 0) {
+                    score = ytd.score;
+                    final = ytd.final;
+                    console.log(`GP=0 fallback "${cleanSubjectName(course.name)}" (${studentName}): YTD=${score}%`);
                   }
                 }
               }
+
+              if (score !== null || grade !== null) {
+                courseGradeMap.set(course.id, { currentScore: score, finalScore: final, currentGrade: grade });
+                console.log(`Per-course grade "${cleanSubjectName(course.name)}" (${studentName}): ${score}%`);
+              }
+            } catch (err) {
+              console.error(`Per-course grade error for ${course.id}:`, err);
             }
-          } catch (err) {
-            console.error(`User-level enrollment error for ${studentName}:`, err);
-          }
+          }));
         }
       } else {
-        // Self (student) account: extract from embedded total_scores
+        // Self (student) account: grades are already embedded via total_scores
         for (const course of courses) {
           const enrollments: any[] = (course as any).enrollments ?? [];
           const e = enrollments.find((e: any) => ["observer", "student", "StudentEnrollment"].includes(e.type));
           if (e) {
-            const score: number | null = e.grades?.override_score ?? e.grades?.current_score ?? e.computed_current_score ?? null;
-            const final: number | null = e.grades?.final_score ?? e.computed_final_score ?? null;
-            const grade: string | null = e.grades?.override_grade ?? e.grades?.current_grade ?? e.computed_current_grade ?? null;
+            const { score, final, grade } = parseGrades(e);
             if (score !== null || grade !== null) {
               courseGradeMap.set(course.id, { currentScore: score, finalScore: final, currentGrade: grade });
-              console.log(`Grade "${cleanSubjectName(course.name)}" (${studentName}): current=${score}% final=${final}%`);
             }
           }
         }
@@ -349,7 +261,7 @@ serve(async (req) => {
 
       console.log(`Grades: ${courseGradeMap.size}/${courses.length} courses (${studentName})`);
 
-      // Populate allCourseGrades from the grade map
+      // Populate allCourseGrades
       for (const course of courses) {
         const grades = courseGradeMap.get(course.id);
         allCourseGrades.push({
@@ -362,167 +274,129 @@ serve(async (req) => {
         });
       }
 
-      await Promise.all(
-
-        courses.map(async (course) => {
-          try {
-            // Try fetching assignments 
-            let assignUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/assignments?per_page=100&include[]=submission&order_by=due_at`;
-
-            let assignRes = await fetch(assignUrl, { headers });
-
-            if (!assignRes.ok) {
-              const text = await assignRes.text();
-              console.error(`Assignments error for "${course.name}" (${course.id}):`, assignRes.status, text);
-              return;
-            }
-
-            let assignments: CanvasAssignment[] = await assignRes.json();
-
-            // If observer got 0 assignments, try fetching without submission include
-            // and get submissions separately
-            if (assignments.length === 0 && studentId) {
-              console.log(`Retrying "${course.name}" for ${studentName} without submission include...`);
-              assignUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/assignments?per_page=100&order_by=due_at`;
-              assignRes = await fetch(assignUrl, { headers });
-
-              if (assignRes.ok) {
-                assignments = await assignRes.json();
-                console.log(`  Retry got ${assignments.length} assignments`);
-              } else {
-                await assignRes.text();
-              }
-
-              // If still empty, try the student's submissions endpoint directly
-              if (assignments.length === 0) {
-                console.log(`Trying submissions endpoint for student ${studentId} in course ${course.id}...`);
-                const subUrl = `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/students/submissions?student_ids[]=${studentId}&per_page=100&include[]=assignment`;
-                const subRes = await fetch(subUrl, { headers });
-
-                if (subRes.ok) {
-                  const submissions = await subRes.json();
-                  console.log(`  Submissions endpoint returned ${submissions.length} items`);
-
-                  // Convert submissions to assignment format
-                  for (const sub of submissions) {
-                    if (sub.assignment) {
-                      assignments.push({
-                        id: sub.assignment.id,
-                        name: sub.assignment.name,
-                        due_at: sub.assignment.due_at,
-                        lock_at: sub.assignment.lock_at ?? null,
-                        course_id: course.id,
-                        has_submitted_submissions: sub.workflow_state !== "unsubmitted",
-                        points_possible: sub.assignment.points_possible ?? null,
-                        submission: {
-                          workflow_state: sub.workflow_state,
-                          grade: sub.grade,
-                          score: sub.score,
-                        },
-                      });
-                    }
-                  }
-                } else {
-                  const text = await subRes.text();
-                  console.log(`  Submissions endpoint failed:`, subRes.status, text);
-                }
-              }
-            }
-
-            console.log(`Course "${course.name}" (${studentName}): ${assignments.length} assignments`);
-
-            for (const a of assignments) {
-              const now = new Date();
-
-              // Resolve the effective due date: prefer lock_at (submission deadline) over due_at.
-              // Skip the assignment entirely if neither exists.
-              const effectiveDueAt = a.lock_at || a.due_at;
-              if (!effectiveDueAt) continue; // No date → off the board
-
-              // Skip Gimkit assignments from Chinese class — they're in-class games, not homework
-              if (course.name.toLowerCase().includes("chinese") && a.name.toLowerCase().includes("gimkit")) continue;
-
-              // Enforce perpetual Dynamic Quarter filtering (uses due_at for boundary check)
-              if (activeQuarterStart && activeQuarterEnd) {
-                const checkDate = new Date(a.due_at || effectiveDueAt);
-                const graceStart = new Date(activeQuarterStart.getTime() - 10 * 24 * 60 * 60 * 1000);
-                const graceEnd = new Date(activeQuarterEnd.getTime() + 10 * 24 * 60 * 60 * 1000);
-                if (checkDate < graceStart || checkDate > graceEnd) continue;
-              }
-
-              const dueDate = new Date(effectiveDueAt);
-
-              // Fallback: If we couldn't resolve a quarter from Canvas, filter older than 90 days.
-              if (!activeQuarterStart) {
-                const daysPast = (now.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24);
-                if (daysPast > 90) continue;
-              }
-
-              const dueDateStr = dueDate.toISOString().split("T")[0];
-              const dueStatus: "overdue" | "upcoming" = dueDate < now ? "overdue" : "upcoming";
-
-              let status: "todo" | "progress" | "done" = "todo";
-              let grade: string | undefined;
-              let score: number | undefined;
-              let totalPoints: number | undefined;
-
-              if (a.points_possible != null) {
-                totalPoints = a.points_possible;
-              }
-
-              if (a.submission) {
-                const ws = a.submission.workflow_state;
-                if (ws === "graded") {
-                  status = "done";
-                  grade = a.submission.grade || undefined;
-                  if (a.submission.score != null) score = a.submission.score;
-                } else if (ws === "submitted" || ws === "pending_review") {
-                  status = "progress";
-                } else if (a.has_submitted_submissions) {
-                  status = "progress";
-                }
-              }
-
-              const subject = cleanSubjectName(course.name);
-
-              allAssignments.push({
-                canvasId: a.id,
-                title: a.name,
-                subject,
-                dueDate: dueDateStr,
-                status,
-                grade,
-                score,
-                totalPoints,
-                dueStatus,
-                canvasUrl: `${CANVAS_BASE_URL}/courses/${course.id}/assignments/${a.id}`,
-                studentName: firstName,
-              });
-            }
-          } catch (err) {
-            console.error(`Error fetching assignments for course ${course.id}:`, err);
+      // ── Fetch assignments for all courses in parallel ──
+      const now = new Date(); // computed once — not inside the assignment loop
+      await Promise.all(courses.map(async (course) => {
+        try {
+          let assignRes = await fetch(
+            `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/assignments?per_page=100&include[]=submission&order_by=due_at`,
+            { headers }
+          );
+          if (!assignRes.ok) {
+            console.error(`Assignments error for "${course.name}":`, assignRes.status, await assignRes.text());
+            return;
           }
-        })
-      );
-    }
+
+          let assignments: CanvasAssignment[] = await assignRes.json();
+
+          // Fallback: if observer got 0 assignments, try without submission include,
+          // then try the student submissions endpoint.
+          if (assignments.length === 0 && studentId) {
+            assignRes = await fetch(
+              `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/assignments?per_page=100&order_by=due_at`,
+              { headers }
+            );
+            if (assignRes.ok) assignments = await assignRes.json();
+
+            if (assignments.length === 0) {
+              const subRes = await fetch(
+                `${CANVAS_BASE_URL}/api/v1/courses/${course.id}/students/submissions?student_ids[]=${studentId}&per_page=100&include[]=assignment`,
+                { headers }
+              );
+              if (subRes.ok) {
+                const submissions = await subRes.json();
+                for (const sub of submissions) {
+                  if (sub.assignment) {
+                    assignments.push({
+                      id: sub.assignment.id,
+                      name: sub.assignment.name,
+                      due_at: sub.assignment.due_at,
+                      lock_at: sub.assignment.lock_at ?? null,
+                      course_id: course.id,
+                      has_submitted_submissions: sub.workflow_state !== "unsubmitted",
+                      points_possible: sub.assignment.points_possible ?? null,
+                      submission: { workflow_state: sub.workflow_state, grade: sub.grade, score: sub.score },
+                    });
+                  }
+                }
+              }
+            }
+          }
+
+          console.log(`Course "${cleanSubjectName(course.name)}" (${studentName}): ${assignments.length} assignments`);
+
+          for (const a of assignments) {
+            const effectiveDueAt = a.lock_at || a.due_at;
+            if (!effectiveDueAt) continue;
+
+            // Skip Gimkit assignments from Chinese class
+            if (course.name.toLowerCase().includes("chinese") && a.name.toLowerCase().includes("gimkit")) continue;
+
+            // Quarter filtering
+            if (activeQuarterStart && activeQuarterEnd) {
+              const checkDate = new Date(a.due_at || effectiveDueAt);
+              const graceStart = new Date(activeQuarterStart.getTime() - 10 * 24 * 60 * 60 * 1000);
+              const graceEnd = new Date(activeQuarterEnd.getTime() + 10 * 24 * 60 * 60 * 1000);
+              if (checkDate < graceStart || checkDate > graceEnd) continue;
+            } else {
+              // No quarter resolved: drop anything older than 90 days
+              const daysPast = (now.getTime() - new Date(effectiveDueAt).getTime()) / (1000 * 60 * 60 * 24);
+              if (daysPast > 90) continue;
+            }
+
+            const dueDate = new Date(effectiveDueAt);
+            const dueDateStr = dueDate.toISOString().split("T")[0];
+            const dueStatus: "overdue" | "upcoming" = dueDate < now ? "overdue" : "upcoming";
+
+            let status: "todo" | "progress" | "done" = "todo";
+            let grade: string | undefined;
+            let score: number | undefined;
+            const totalPoints = a.points_possible != null ? a.points_possible : undefined;
+
+            if (a.submission) {
+              const ws = a.submission.workflow_state;
+              if (ws === "graded") {
+                status = "done";
+                grade = a.submission.grade || undefined;
+                if (a.submission.score != null) score = a.submission.score;
+              } else if (ws === "submitted" || ws === "pending_review") {
+                status = "progress";
+              } else if (a.has_submitted_submissions) {
+                status = "progress";
+              }
+            }
+
+            allAssignments.push({
+              canvasId: a.id,
+              title: a.name,
+              subject: cleanSubjectName(course.name),
+              dueDate: dueDateStr,
+              status,
+              grade,
+              score,
+              totalPoints,
+              dueStatus,
+              canvasUrl: `${CANVAS_BASE_URL}/courses/${course.id}/assignments/${a.id}`,
+              studentName: firstName,
+            });
+          }
+        } catch (err) {
+          console.error(`Error fetching assignments for course ${course.id}:`, err);
+        }
+      }));
+    }));
 
     console.log(`Total assignments collected: ${allAssignments.length}`);
 
     return new Response(
       JSON.stringify({ assignments: allAssignments, courseGrades: allCourseGrades }),
-      {
-        status: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (e) {
     console.error("canvas-sync error:", e);
     return new Response(
       JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 });
